@@ -4,7 +4,7 @@
 #include <sstream>
 #include <vector>
 
-#define APP_REGISTRY_LOC TEXT("SOFTWARE\\KTI\\VideoSource")
+#define APP_REGISTRY_LOC TEXT("SOFTWARE\\SQTech\\DahuaFilter\\VideoSource")
 #define KEY_NAME_CONNECTION_PARAM TEXT("CONNECTION_PARAM")
 #define KEY_NAME_READ_COMPLETE TEXT("READ_COMPLETE")
 
