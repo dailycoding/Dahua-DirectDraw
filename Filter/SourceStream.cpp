@@ -15,9 +15,7 @@ CDahuaSourceStream::CDahuaSourceStream(HRESULT *phr, CSource *pParent, LPCWSTR p
 
     m_pBuf = NULL;
     m_nSize = m_nWidth = m_nHeight = 0;
-
 }
-
 
 CDahuaSourceStream::~CDahuaSourceStream()
 {

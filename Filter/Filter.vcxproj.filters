@@ -24,6 +24,9 @@
     <ClCompile Include="SourceStream.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="DahuaDevice.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Filters.h">
@@ -36,6 +39,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="CaptureEvents.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="DahuaDevice.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
