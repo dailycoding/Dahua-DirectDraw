@@ -65,13 +65,13 @@ HRESULT CDahuaSourceStream::FillBuffer(IMediaSample *pms)
     if (m_bFirstTime)
     {
         m_bFirstTime = FALSE;
-        //DeviceConnectionParam dahuaConnectionParam;
-        //if (m_Device.ReadVideoSourceConnectionParam(&dahuaConnectionParam))
-        //{
-        //    m_Device.SetReadCompleteFlag();
-        //    m_Device.InitializeDevices(this, lDataLen, &dahuaConnectionParam);
-        //    m_Device.StartPlay(&m_Device.g_struDeviceInfo[m_Device.m_iDeviceIndex].pStruChanInfo[dahuaConnectionParam.ChannelNo]);
-        //}
+        DeviceConnectionParam connectionParam;
+        if (m_Device.ReadVideoSourceConnectionParam(&connectionParam))
+        {
+            m_Device.SetReadCompleteFlag();
+            m_Device.InitializeDevices(this, lDataLen, &connectionParam);
+        //    m_Device.StartPlay(&m_Device.g_struDeviceInfo[m_Device.m_iDeviceIndex].pStruChanInfo[connectionParam.ChannelNo]);
+        }
         //else
         //{
         //    // Failed to initialize, use random data to initialize screen

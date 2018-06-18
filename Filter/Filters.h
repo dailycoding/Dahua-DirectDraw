@@ -1,6 +1,5 @@
 #pragma once
 
-#include <streams.h>
 #include <source.h>
 
 class CDahuaSourceFilter : public CSource

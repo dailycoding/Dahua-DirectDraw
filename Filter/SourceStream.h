@@ -2,8 +2,7 @@
 
 #include <source.h>
 #include "CaptureEvents.h"
-//#include <strmif.h>
-//#include <mtype.h>
+#include "DahuaDevice.h"
 
 class CDahuaSourceStream : public CSourceStream, public ICaptureEvent
 {
@@ -34,6 +33,7 @@ private:
     LPBYTE m_pBuf;
     LONG m_nSize, m_nWidth, m_nHeight;
 
+    CDahuaDevice m_Device;
 
 
 

@@ -19,6 +19,11 @@ CDahuaDevice::CDahuaDevice()
     m_NetParam.nConnectTryNum = 5;
     m_NetParam.nSubConnectSpaceTime = 1000;
     m_NetParam.nGetConnInfoTime = 5000;
+
+    m_hWnd = NULL;
+    memset(&m_siNode, 0, sizeof(m_siNode));
+
+    m_bNetSDKInitFlag = FALSE;
 }
 
 CDahuaDevice::~CDahuaDevice()
@@ -30,6 +35,10 @@ BOOL CDahuaDevice::InitializeDevices(ICaptureEvent* captureEvents, long bufferSi
     int err;
 
     m_pConnectionParam = connectionParam;
+
+    // SDK Initialization
+    if (!InitializeSDK())
+        return FALSE;
 
     // Set network param
     CLIENT_SetNetworkParam(&m_NetParam);
@@ -76,6 +85,130 @@ BOOL CDahuaDevice::InitializeDevices(ICaptureEvent* captureEvents, long bufferSi
     memset(&m_DeviceNode, 0, sizeof(m_DeviceNode));
 
     return FALSE;
+}
+
+BOOL CDahuaDevice::InitializeSDK()
+{
+    // Try to initialize SDK 
+    if (!m_bNetSDKInitFlag)
+        m_bNetSDKInitFlag = CLIENT_Init(&CDahuaDevice::OnDisconnect, (LDWORD)(LPDWORD)this);
+
+    return m_bNetSDKInitFlag;
+}
+
+void CALLBACK CDahuaDevice::OnDisconnect(LLONG lLoginID, char *pchDVRIP, LONG nDVRPort, LDWORD dwUser)
+{
+    if (dwUser == 0)
+        return;
+
+    CDahuaDevice *self = (CDahuaDevice *)dwUser;
+    //self->DeviceDisconnect(lLoginID, pchDVRIP, nDVRPort);
+
+    return;
+}
+
+LONG CDahuaDevice::StartPlay(int nCh, DH_RealPlayType subtype)
+{
+    LONG nID = m_DeviceNode.LoginID;
+    LONG nChannelID;
+
+    HWND hWnd = GetChannelWindow(nCh);
+
+    nChannelID = CLIENT_RealPlayEx(nID, nCh, hWnd, subtype);
+
+    // Set sub-channel
+    int nStreamType = subtype;
+    if (nStreamType >= DH_RType_Realplay_0 && nStreamType <= DH_RType_Realplay_3)
+    {
+        nStreamType -= (int)DH_RType_Realplay_0;
+    }
+    else
+    {
+        nStreamType = 0;
+    }
+    CLIENT_MakeKeyFrame(nID, nCh, nStreamType);
+
+    if (!nChannelID)
+    {
+        return -1;
+    }
+
+    // Get video effects
+    BYTE bVideo[4];
+    BOOL nRet = CLIENT_ClientGetVideoEffect(nChannelID, &bVideo[0], &bVideo[1], &bVideo[2], &bVideo[3]);
+    if (!nRet)
+    {
+        return -1;
+    }
+
+    // Save channel info
+    SplitInfoNode& siNode = m_siNode;
+    siNode.Type = SPLIT_TYPE_MONITOR;
+    siNode.nVideoParam.dwParam = *(DWORD *)bVideo;
+    siNode.iHandle = nChannelID;
+
+    SplitMonitorParam *mparam = new SplitMonitorParam;
+    mparam->pDevice = &m_DeviceNode;
+    mparam->iChannel = nCh;
+
+    siNode.Param = mparam;
+
+    // Open sound
+    nRet = CLIENT_OpenSound(nChannelID);
+    if (!nRet)
+    {
+        // ...
+    }
+
+    // Set Data callback
+    BOOL cbRec = CLIENT_SetRealDataCallBackEx(nChannelID, RealDataCallBackEx, (DWORD)this, 0x0000000f);
+    if (!cbRec)
+    {
+        return -1;
+    }
+
+    return 0;
+}
+
+BOOL CDahuaDevice::StopPlay()
+{
+    SplitInfoNode& siNode = m_siNode;
+    if (siNode.iHandle)
+    {
+        CLIENT_StopRealPlayEx(siNode.iHandle);
+        siNode.iHandle = 0;
+    }
+    if (siNode.Param != NULL)
+    {
+        delete (SplitMonitorParam *)siNode.Param;
+        siNode.Param = NULL;
+    }
+    
+    memset(&siNode, 0, sizeof(siNode));
+
+    return TRUE;
+}
+
+HWND CDahuaDevice::GetChannelWindow(int /*nChannelNo*/)
+{
+    /*if (m_hWndVideo[nChannelNo] == NULL)
+    {
+
+    }*/
+
+    return GetConsoleWindow();
+}
+
+void CALLBACK CDahuaDevice::RealDataCallBackEx(LLONG lRealHandle, DWORD dwDataType, BYTE *pBuffer, DWORD dwBufSize, LONG lParam, LDWORD dwUser)
+{
+    if (dwUser == 0)
+    {
+        return;
+    }
+
+    CDahuaDevice *self = (CDahuaDevice *)dwUser;
+    
+    return;
 }
 
 std::string _ttoa(const tstring& str)
