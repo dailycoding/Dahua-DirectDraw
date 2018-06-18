@@ -5,8 +5,14 @@
 class CDahuaSourceFilter : public CSource
 {
 public:
-    // The only allowed way to create Bouncing balls!
+    //////////////////////////////////////////////////////////////////////////
+    //  IUnknown
+    //////////////////////////////////////////////////////////////////////////
     static CUnknown * WINAPI CreateInstance(LPUNKNOWN lpunk, HRESULT *phr);
+    STDMETHODIMP QueryInterface(REFIID riid, void **ppv);
+
+    IFilterGraph *GetGraph() { return m_pGraph; }
+
 private:
     CDahuaSourceFilter(LPUNKNOWN lpunk, HRESULT *phr);
 };

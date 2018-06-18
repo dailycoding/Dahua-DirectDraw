@@ -29,3 +29,12 @@ CDahuaSourceFilter::CDahuaSourceFilter(LPUNKNOWN lpunk, HRESULT *phr)
         return;
     }
 }
+
+HRESULT CDahuaSourceFilter::QueryInterface(REFIID riid, void **ppv)
+{
+    //Forward request for IAMStreamConfig & IKsPropertySet to the pin
+    if (riid == _uuidof(IAMStreamConfig) || riid == _uuidof(IKsPropertySet))
+        return m_paStreams[0]->QueryInterface(riid, ppv);
+    else
+        return CSource::QueryInterface(riid, ppv);
+}
