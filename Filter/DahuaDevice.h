@@ -86,9 +86,13 @@ public:
 
 public:
     BOOL InitializeDevices(ICaptureEvent* captureEvents, long bufferSize, DeviceConnectionParam*);
+    BOOL IsInitialized();
+
     LONG StartPlay(int nChannelNo, DH_RealPlayType subtype);
     //LONG StartPlayInsideDecode(PCHANNEL_INFO pChanInfo);
     BOOL StopPlay(void);
+
+    BOOL GetDeviceConfig();
 
     BOOL ReadVideoSourceConnectionParam(DeviceConnectionParam* connectionParam);
     BOOL SetReadCompleteFlag();
@@ -99,7 +103,8 @@ public:
 protected:
     BOOL InitializeSDK();
 
-    HWND GetChannelWindow(int nChannelNo);
+    HWND GetChannelWindow();
+    void LastError();
 
     BOOL GetValueFromRegistry(HKEY hkey, LPCTSTR strKey, unsigned long type, tstring& strVal, DWORD& dwRet);
     BOOL SetValueToRegistry(HKEY hkey, LPCTSTR strValName, DWORD type, const tstring& strVal);

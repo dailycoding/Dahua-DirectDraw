@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "DahuaDevice.h"
+#include "dhconfigsdk.h"
 #include <cstdlib>
 #include <sstream>
 #include <vector>
@@ -28,6 +29,14 @@ CDahuaDevice::CDahuaDevice()
 
 CDahuaDevice::~CDahuaDevice()
 {
+    if (IsInitialized())
+    {
+        //logoff user
+        CLIENT_Logout(m_DeviceNode.LoginID);
+
+        //release SDK resoure
+        CLIENT_Cleanup();
+    }
 }
 
 BOOL CDahuaDevice::InitializeDevices(ICaptureEvent* captureEvents, long bufferSize, DeviceConnectionParam* connectionParam)
@@ -75,6 +84,8 @@ BOOL CDahuaDevice::InitializeDevices(ICaptureEvent* captureEvents, long bufferSi
         BOOL ret = CLIENT_StartListenEx(m_DeviceNode.LoginID);
         if (!ret)
         {
+            LastError();
+
             return FALSE;
         }
 
@@ -87,23 +98,22 @@ BOOL CDahuaDevice::InitializeDevices(ICaptureEvent* captureEvents, long bufferSi
     return FALSE;
 }
 
+BOOL CDahuaDevice::IsInitialized()
+{
+    return m_DeviceNode.LoginID > 0;
+}
+
 BOOL CDahuaDevice::InitializeSDK()
 {
     // Try to initialize SDK 
     if (!m_bNetSDKInitFlag)
-        m_bNetSDKInitFlag = CLIENT_Init(&CDahuaDevice::OnDisconnect, (LDWORD)(LPDWORD)this);
+        m_bNetSDKInitFlag = CLIENT_Init(&CDahuaDevice::OnDisconnect, 0);
 
     return m_bNetSDKInitFlag;
 }
 
 void CALLBACK CDahuaDevice::OnDisconnect(LLONG lLoginID, char *pchDVRIP, LONG nDVRPort, LDWORD dwUser)
 {
-    if (dwUser == 0)
-        return;
-
-    CDahuaDevice *self = (CDahuaDevice *)dwUser;
-    //self->DeviceDisconnect(lLoginID, pchDVRIP, nDVRPort);
-
     return;
 }
 
@@ -112,7 +122,7 @@ LONG CDahuaDevice::StartPlay(int nCh, DH_RealPlayType subtype)
     LONG nID = m_DeviceNode.LoginID;
     LONG nChannelID;
 
-    HWND hWnd = GetChannelWindow(nCh);
+    HWND hWnd = GetChannelWindow();
 
     nChannelID = CLIENT_RealPlayEx(nID, nCh, hWnd, subtype);
 
@@ -130,6 +140,7 @@ LONG CDahuaDevice::StartPlay(int nCh, DH_RealPlayType subtype)
 
     if (!nChannelID)
     {
+        LastError();
         return -1;
     }
 
@@ -138,6 +149,7 @@ LONG CDahuaDevice::StartPlay(int nCh, DH_RealPlayType subtype)
     BOOL nRet = CLIENT_ClientGetVideoEffect(nChannelID, &bVideo[0], &bVideo[1], &bVideo[2], &bVideo[3]);
     if (!nRet)
     {
+        LastError();
         return -1;
     }
 
@@ -161,9 +173,11 @@ LONG CDahuaDevice::StartPlay(int nCh, DH_RealPlayType subtype)
     }
 
     // Set Data callback
-    BOOL cbRec = CLIENT_SetRealDataCallBackEx(nChannelID, RealDataCallBackEx, (DWORD)this, 0x0000000f);
+    BOOL cbRec = CLIENT_SetRealDataCallBackEx(nChannelID, RealDataCallBackEx, 0, 0x0000000f);
     if (!cbRec)
     {
+        LastError();
+
         return -1;
     }
 
@@ -189,25 +203,134 @@ BOOL CDahuaDevice::StopPlay()
     return TRUE;
 }
 
-HWND CDahuaDevice::GetChannelWindow(int /*nChannelNo*/)
+BOOL CDahuaDevice::GetDeviceConfig()
 {
-    /*if (m_hWndVideo[nChannelNo] == NULL)
+    //judge it is third generation ptotocol device or not
+    BOOL b3GProtocol = FALSE;
+    int len = 0;
+    DH_DEV_ENABLE_INFO stDevEn = { 0 };
+
+    BOOL bRet = CLIENT_QuerySystemInfo(m_DeviceNode.LoginID, ABILITY_DEVALL_INFO, (char*)&stDevEn, sizeof(DH_DEV_ENABLE_INFO), &len);
+    if (bRet && len == sizeof(DH_DEV_ENABLE_INFO))
+    {
+        if (stDevEn.IsFucEnable[EN_JSON_CONFIG] != 0 || m_DeviceNode.Info.byChanNum > 32)
+        {
+            b3GProtocol = TRUE;
+        }
+        else
+        {
+            b3GProtocol = FALSE;
+        }
+    }
+
+    if (b3GProtocol == TRUE)
+    {
+        char *szOutBuffer = new char[32 * 1024];
+        memset(szOutBuffer, 0, 32 * 1024);
+
+        int nerror = 0;
+        CFG_ENCODE_INFO stuEncodeInfo = { 0 };
+        int nrestart = 0;
+
+        BOOL bSuccess = CLIENT_GetNewDevConfig(m_DeviceNode.LoginID, CFG_CMD_ENCODE, 0, szOutBuffer, 32 * 1024, &nerror, 5000);
+        if (bSuccess)
+        {
+            int nRetLen = 0;
+            //analysis
+            BOOL bRet = CLIENT_ParseData(CFG_CMD_ENCODE, (char *)szOutBuffer, &stuEncodeInfo, sizeof(CFG_ENCODE_INFO), &nRetLen);
+            if (bRet == FALSE)
+            {
+                printf("CLIENT_ParseData: CFG_CMD_ENCODE failed!\n");
+            }
+        }
+        else
+        {
+            printf("CLIENT_GetNewDevConfig: CFG_CMD_ENCODE failed!\n");
+
+        }
+
+        //stuEncodeInfo.stuMainStream[0].stuVideoFormat.nFrameRate = 20;//change frame rate
+        //memset(szOutBuffer, 0, 32 * 1024);
+
+        //bSuccess = CLIENT_PacketData(CFG_CMD_ENCODE, (char *)&stuEncodeInfo, sizeof(CFG_ENCODE_INFO), szOutBuffer, 32 * 1024);
+        //if (bSuccess == FALSE)
+        //{
+        //    printf("CLIENT_PacketData: CFG_CMD_ENCODE failed!\n");
+        //}
+        //else
+        //{
+        //    bSuccess = CLIENT_SetNewDevConfig(m_DeviceNode.LoginID, CFG_CMD_ENCODE, 0, szOutBuffer, 32 * 1024, &nerror, &nrestart, 3000);
+        //    if (bSuccess)
+        //    {
+        //        if (nrestart == 1)
+        //        {
+        //            printf("Save config info successfully!devide need restart!\n");
+        //        }
+        //    }
+        //    else
+        //    {
+        //        printf("CLIENT_SetNewDevConfig CFG_CMD_ENCODE failed!\n");
+        //    }
+        //}
+
+        delete[] szOutBuffer;
+    }
+    else
+    {
+        int nChannelCount = m_DeviceNode.Info.byChanNum;
+        DWORD dwRetLen = 0;
+        DHDEV_CHANNEL_CFG *pChannelInfo = new DHDEV_CHANNEL_CFG[nChannelCount];
+        memset(pChannelInfo, 0, nChannelCount * sizeof(DHDEV_CHANNEL_CFG));
+
+        BOOL bSuccess = CLIENT_GetDevConfig(m_DeviceNode.LoginID, DH_DEV_CHANNELCFG, -1, pChannelInfo, nChannelCount * sizeof(DHDEV_CHANNEL_CFG), &dwRetLen);
+        if (!(bSuccess && dwRetLen == nChannelCount * sizeof(DHDEV_CHANNEL_CFG)))
+        {
+            printf("CLIENT_GetDevConfig: DH_DEV_CHANNELCFG failed!\n");
+        }
+
+        //pChannelInfo[0].stMainVideoEncOpt[0].byFramesPerSec = 20;//change frame rate
+
+        //bSuccess = CLIENT_SetDevConfig(m_DeviceNode.LoginID, DH_DEV_CHANNELCFG, -1, pChannelInfo, nChannelCount * sizeof(DHDEV_CHANNEL_CFG));
+        //if (bSuccess == FALSE)
+        //{
+        //    printf("CLIENT_SetDevConfig: DH_DEV_CHANNELCFG failed!\n");
+        //}
+
+        delete[] pChannelInfo;
+    }
+
+    // Get Video Resolution
+    DWORD dwRetLen = 0;
+    DEV_VIDEOOUT_INFO videoOutInfo;
+    BOOL bSuccess = CLIENT_GetDevConfig(m_DeviceNode.LoginID, DH_DEV_VIDEOOUT_CFG, -1, &videoOutInfo, sizeof(videoOutInfo), &dwRetLen);
+    if (bSuccess)
     {
 
-    }*/
+    }
 
-    return GetConsoleWindow();
+
+    return TRUE;
+}
+
+HWND CDahuaDevice::GetChannelWindow()
+{
+    if (m_hWnd == NULL)
+    {
+        m_hWnd = ::CreateWindowA("STATIC", "Render", 0, 0, 0, 1, 1, NULL, NULL, NULL, NULL);
+    }
+
+    return m_hWnd;
+}
+
+void CDahuaDevice::LastError()
+{
+    DWORD dwError = CLIENT_GetLastError();
+
+    return;
 }
 
 void CALLBACK CDahuaDevice::RealDataCallBackEx(LLONG lRealHandle, DWORD dwDataType, BYTE *pBuffer, DWORD dwBufSize, LONG lParam, LDWORD dwUser)
 {
-    if (dwUser == 0)
-    {
-        return;
-    }
-
-    CDahuaDevice *self = (CDahuaDevice *)dwUser;
-    
     return;
 }
 
@@ -236,6 +359,13 @@ std::string _ttoa(const tstring& str)
 BOOL CDahuaDevice::ReadVideoSourceConnectionParam(DeviceConnectionParam* connectionParam)
 {
     HKEY hEcoDocKey = NULL;
+
+    if (ERROR_SUCCESS != RegCreateKey(HKEY_LOCAL_MACHINE, APP_REGISTRY_LOC, &hEcoDocKey))
+    {
+        return FALSE;
+    }
+    RegCloseKey(hEcoDocKey);
+
     if (ERROR_SUCCESS != ::RegOpenKeyEx(HKEY_LOCAL_MACHINE, APP_REGISTRY_LOC, 0, KEY_READ, &hEcoDocKey))
     {
         return FALSE;
@@ -260,20 +390,18 @@ BOOL CDahuaDevice::ReadVideoSourceConnectionParam(DeviceConnectionParam* connect
         switch (iIndex)
         {
         case 0:
-            break;
-        case 1:
             strcpy_s(connectionParam->IP, strToken.data());
             break;
-        case 2:
+        case 1:
             connectionParam->Port = atoi(strToken.data());
             break;
-        case 3:
+        case 2:
             strcpy_s(connectionParam->Username, strToken.data());
             break;
-        case 4:
+        case 3:
             strcpy_s(connectionParam->Password, strToken.data());
             break;
-        case 5:
+        case 4:
             connectionParam->ChannelNo = atoi(strToken.data());
             break;
         default:
@@ -350,7 +478,7 @@ BOOL CDahuaDevice::SetValueToRegistry(HKEY hkey, LPCTSTR strValName, DWORD type,
     else
     {
         // Read string value from registry
-        int nLen = strVal.length();
+        DWORD nLen = (DWORD)strVal.length();
         LONG lRet = RegSetValueEx(hkey, strValName, 0, type, (LPBYTE)strVal.data(), nLen * sizeof(TCHAR));
     }
 

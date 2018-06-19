@@ -9,19 +9,52 @@
 
 
 CDahuaSourceStream::CDahuaSourceStream(HRESULT *phr, CSource *pParent, LPCWSTR pPinName)
-    : CSourceStream(VIDEO_SOURCE_NAME, phr, pParent, pPinName), m_pParent(pParent)
+    : CSourceStream(VIDEO_SOURCE, phr, pParent, pPinName), m_pParent(pParent)
 {
     m_bFirstTime = TRUE;
     m_bProcessingBitmap = FALSE;
 
     m_pBuf = NULL;
     m_nSize = m_nWidth = m_nHeight = 0;
+
+    // Set the default media type
+    GetMediaType(1, &m_mt);
 }
 
 CDahuaSourceStream::~CDahuaSourceStream()
 {
 }
 
+// Try to connect to device if not connected
+BOOL CDahuaSourceStream::ConnectDevice()
+{
+    if (m_Device.IsInitialized())
+        return TRUE;
+
+    DeviceConnectionParam connectionParam;
+    if (m_Device.ReadVideoSourceConnectionParam(&connectionParam))
+    {
+        m_Device.SetReadCompleteFlag();
+        if (m_Device.InitializeDevices(this, 0, &connectionParam))
+        {
+            if (!m_Device.GetDeviceConfig())
+            {
+                DWORD dwErr = CLIENT_GetLastError();
+                return FALSE;
+            }
+
+            m_Device.StartPlay(connectionParam.ChannelNo, DH_RType_Realplay);
+
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+//////////////////////////////////////////////////////////////////////////
+//  IUnknown
+//////////////////////////////////////////////////////////////////////////
 HRESULT CDahuaSourceStream::QueryInterface(REFIID riid, void **ppv)
 {
     // Standard OLE stuff
@@ -36,8 +69,10 @@ HRESULT CDahuaSourceStream::QueryInterface(REFIID riid, void **ppv)
     return S_OK;
 }
 
-// Notify
+//////////////////////////////////////////////////////////////////////////
+// IQualityControl
 // Ignore quality management messages sent from the downstream filter
+//////////////////////////////////////////////////////////////////////////
 STDMETHODIMP CDahuaSourceStream::Notify(IBaseFilter * pSender, Quality q)
 {
     return E_NOTIMPL;
@@ -80,21 +115,14 @@ HRESULT CDahuaSourceStream::FillBuffer(IMediaSample *pms)
     if (m_bFirstTime)
     {
         m_bFirstTime = FALSE;
-        DeviceConnectionParam connectionParam;
-        if (m_Device.ReadVideoSourceConnectionParam(&connectionParam))
+        if (!ConnectDevice())
         {
-            m_Device.SetReadCompleteFlag();
-            m_Device.InitializeDevices(this, lDataLen, &connectionParam);
-        //    m_Device.StartPlay(&m_Device.g_struDeviceInfo[m_Device.m_iDeviceIndex].pStruChanInfo[connectionParam.ChannelNo]);
+            // Failed to initialize, use random data to initialize screen
+            for (int i = 0; i < lDataLen; ++i)
+            {
+                pData[i] = rand();
+            }
         }
-        //else
-        //{
-        //    // Failed to initialize, use random data to initialize screen
-        //    for (int i = 0; i < lDataLen; ++i)
-        //    {
-        //        pData[i] = rand();
-        //    }
-        //}
     }
 
     // If there's no screen captured, return
@@ -119,6 +147,9 @@ HRESULT CDahuaSourceStream::DecideBufferSize(IMemAllocator *pAlloc, ALLOCATOR_PR
     HRESULT hr = NOERROR;
 
     VIDEOINFOHEADER *pvi = (VIDEOINFOHEADER *)m_mt.Format();
+    if (pvi == NULL)
+        return E_INVALIDARG;
+
     pProperties->cBuffers = 1;
     pProperties->cbBuffer = pvi->bmiHeader.biSizeImage;
 
@@ -163,34 +194,39 @@ HRESULT CDahuaSourceStream::GetMediaType(int iPosition, CMediaType *pmt)
     DECLARE_PTR(VIDEOINFOHEADER, pvi, pmt->AllocFormatBuffer(sizeof(VIDEOINFOHEADER)));
     ZeroMemory(pvi, sizeof(VIDEOINFOHEADER));
 
-    pvi->bmiHeader.biCompression = BI_RGB;
-    pvi->bmiHeader.biBitCount = 24;
-    pvi->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    pvi->bmiHeader.biWidth = 480 * iPosition;
-    pvi->bmiHeader.biHeight = 384 * iPosition;
-    pvi->bmiHeader.biPlanes = 1;
-    pvi->bmiHeader.biSizeImage = GetBitmapSize(&pvi->bmiHeader);
-    pvi->bmiHeader.biClrImportant = 0;
+    if (pvi != NULL)
+    {
+        pvi->bmiHeader.biCompression = BI_RGB;
+        pvi->bmiHeader.biBitCount = 24;
+        pvi->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        pvi->bmiHeader.biWidth = 480 * iPosition;
+        pvi->bmiHeader.biHeight = 384 * iPosition;
+        pvi->bmiHeader.biPlanes = 1;
+        pvi->bmiHeader.biSizeImage = GetBitmapSize(&pvi->bmiHeader);
+        pvi->bmiHeader.biClrImportant = 0;
 
-    pvi->AvgTimePerFrame = 1000000;
+        pvi->AvgTimePerFrame = 1000000;
 
-    SetRectEmpty(&(pvi->rcSource)); // we want the whole image area rendered.
-    SetRectEmpty(&(pvi->rcTarget)); // no particular destination rectangle
+        SetRectEmpty(&(pvi->rcSource)); // we want the whole image area rendered.
+        SetRectEmpty(&(pvi->rcTarget)); // no particular destination rectangle
 
-    pmt->SetType(&MEDIATYPE_Video);
-    pmt->SetFormatType(&FORMAT_VideoInfo);
-    pmt->SetTemporalCompression(FALSE);
+        pmt->SetType(&MEDIATYPE_Video);
+        pmt->SetFormatType(&FORMAT_VideoInfo);
+        pmt->SetTemporalCompression(FALSE);
 
-    // Work out the GUID for the subtype from the header info.
-    const GUID SubTypeGUID = GetBitmapSubtype(&pvi->bmiHeader);
-    pmt->SetSubtype(&SubTypeGUID);
-    pmt->SetSampleSize(pvi->bmiHeader.biSizeImage);
+        // Work out the GUID for the subtype from the header info.
+        const GUID SubTypeGUID = GetBitmapSubtype(&pvi->bmiHeader);
+        pmt->SetSubtype(&SubTypeGUID);
+        pmt->SetSampleSize(pvi->bmiHeader.biSizeImage);
+    }
 
     return NOERROR;
 }
 
 HRESULT CDahuaSourceStream::SetMediaType(const CMediaType *pmt)
 {
+    return S_OK;
+
     DECLARE_PTR(VIDEOINFOHEADER, pvi, pmt->Format());
     HRESULT hr = CSourceStream::SetMediaType(pmt);
 
@@ -224,6 +260,12 @@ HRESULT STDMETHODCALLTYPE CDahuaSourceStream::GetFormat(AM_MEDIA_TYPE **ppmt)
 
 HRESULT STDMETHODCALLTYPE CDahuaSourceStream::GetNumberOfCapabilities(int *piCount, int *piSize)
 {
+    if (!ConnectDevice())
+        return -1;
+
+    // Get device caps
+
+
     *piCount = 8;
     *piSize = sizeof(VIDEO_STREAM_CONFIG_CAPS);
     return S_OK;
@@ -231,8 +273,14 @@ HRESULT STDMETHODCALLTYPE CDahuaSourceStream::GetNumberOfCapabilities(int *piCou
 
 HRESULT STDMETHODCALLTYPE CDahuaSourceStream::GetStreamCaps(int iIndex, AM_MEDIA_TYPE **pmt, BYTE *pSCC)
 {
+    if (!ConnectDevice())
+        return -1;
+
     *pmt = CreateMediaType(&m_mt);
     DECLARE_PTR(VIDEOINFOHEADER, pvi, (*pmt)->pbFormat);
+
+    if (pvi == NULL)
+        return -1;
 
     if (iIndex == 0) iIndex = 4;
 

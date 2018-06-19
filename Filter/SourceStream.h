@@ -48,6 +48,8 @@ public:
 protected:
     void OnFrameChange(BYTE * pBuf, long nSize, long nWidth, long nHeight);
 
+    BOOL ConnectDevice();
+
 private:
     CSource *m_pParent;
 

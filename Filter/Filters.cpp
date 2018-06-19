@@ -14,7 +14,7 @@ CUnknown * WINAPI CDahuaSourceFilter::CreateInstance(LPUNKNOWN lpunk, HRESULT *p
 } // CreateInstance
 
 CDahuaSourceFilter::CDahuaSourceFilter(LPUNKNOWN lpunk, HRESULT *phr)
-    : CSource(VIDEO_SOURCE_NAME, lpunk, CLSID_DahuaCam)
+    : CSource(VIDEO_SOURCE, lpunk, CLSID_DahuaCam)
 {
     CAutoLock cAutoLock(&m_cStateLock);
 
