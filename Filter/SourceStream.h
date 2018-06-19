@@ -4,7 +4,7 @@
 #include "CaptureEvents.h"
 #include "DahuaDevice.h"
 
-class CDahuaSourceStream : public CSourceStream, public IAMStreamConfig, public IKsPropertySet, public ICaptureEvent
+class CDahuaSourceStream : public CSourceStream, public IAMStreamConfig, public IKsPropertySet
 {
 public:
     CDahuaSourceStream(HRESULT *phr, CSource *pms, LPCWSTR pName);
@@ -15,8 +15,8 @@ public:
     //  IUnknown
     //////////////////////////////////////////////////////////////////////////
     STDMETHODIMP QueryInterface(REFIID riid, void **ppv);
-    STDMETHODIMP_(ULONG) AddRef() { return GetOwner()->AddRef(); }                                                          \
-        STDMETHODIMP_(ULONG) Release() { return GetOwner()->Release(); }
+    STDMETHODIMP_(ULONG) AddRef() { return GetOwner()->AddRef(); }
+    STDMETHODIMP_(ULONG) Release() { return GetOwner()->Release(); }
 
     //////////////////////////////////////////////////////////////////////////
     //  IQualityControl
@@ -46,8 +46,6 @@ public:
     HRESULT OnThreadCreate(void);
 
 protected:
-    void OnFrameChange(BYTE * pBuf, long nSize, long nWidth, long nHeight);
-
     BOOL ConnectDevice();
 
 private:

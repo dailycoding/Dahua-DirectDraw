@@ -16,9 +16,6 @@ CDahuaSourceStream::CDahuaSourceStream(HRESULT *phr, CSource *pParent, LPCWSTR p
 
     m_pBuf = NULL;
     m_nSize = m_nWidth = m_nHeight = 0;
-
-    // Set the default media type
-    GetMediaType(1, &m_mt);
 }
 
 CDahuaSourceStream::~CDahuaSourceStream()
@@ -35,7 +32,7 @@ BOOL CDahuaSourceStream::ConnectDevice()
     if (m_Device.ReadVideoSourceConnectionParam(&connectionParam))
     {
         m_Device.SetReadCompleteFlag();
-        if (m_Device.InitializeDevices(this, 0, &connectionParam))
+        if (m_Device.InitializeDevices(0, &connectionParam))
         {
             if (!m_Device.GetDeviceConfig())
             {
@@ -77,17 +74,6 @@ STDMETHODIMP CDahuaSourceStream::Notify(IBaseFilter * pSender, Quality q)
 {
     return E_NOTIMPL;
 } // Notify
-
-void CDahuaSourceStream::OnFrameChange(BYTE * pBuf, long nSize, long nWidth, long nHeight)
-{
-    if (!m_bProcessingBitmap)
-    {
-        m_pBuf = pBuf;
-        m_nSize = nSize;
-        m_nWidth = nWidth;
-        m_nHeight = nHeight;
-    }
-}
 
 
 //////////////////////////////////////////////////////////////////////////
@@ -143,6 +129,9 @@ HRESULT CDahuaSourceStream::FillBuffer(IMediaSample *pms)
 // This method is called after the pins are connected to allocate buffers to stream data
 HRESULT CDahuaSourceStream::DecideBufferSize(IMemAllocator *pAlloc, ALLOCATOR_PROPERTIES *pProperties)
 {
+    CheckPointer(pAlloc,E_POINTER);
+    CheckPointer(pProperties,E_POINTER);
+
     CAutoLock cAutoLock(m_pFilter->pStateLock());
     HRESULT hr = NOERROR;
 
@@ -173,9 +162,37 @@ HRESULT CDahuaSourceStream::OnThreadCreate()
 // This method is called to see if a given output format is supported
 HRESULT CDahuaSourceStream::CheckMediaType(const CMediaType *pMediaType)
 {
-    VIDEOINFOHEADER *pvi = (VIDEOINFOHEADER *)(pMediaType->Format());
-    if (*pMediaType != m_mt)
+    CheckPointer(pMediaType,E_POINTER);
+
+    const GUID Type = *(pMediaType->Type());
+    if (Type != GUID_NULL && Type != MEDIATYPE_Video || // we only output video, GUID_NULL means any
+        !pMediaType->IsFixedSize())                     // in fixed size samples
+    {
         return E_INVALIDARG;
+    }
+
+        // Check for the subtypes we support
+    if (pMediaType->Subtype() == NULL)
+        return E_INVALIDARG;
+
+    const GUID SubType2 = *pMediaType->Subtype();
+
+    // Get the format area of the media type
+    VIDEOINFO *pvi = (VIDEOINFO *) pMediaType->Format();
+    if (pvi == NULL)
+        return E_INVALIDARG; // usually never this...
+
+    if ((SubType2 != MEDIASUBTYPE_RGB24) && (SubType2 != MEDIASUBTYPE_RGB32) && (SubType2 != GUID_NULL))
+    {
+        return E_INVALIDARG;
+    }
+
+    if (m_mt.majortype != GUID_NULL)
+    {
+        // then it must be the same as our current...see SetFormat msdn
+        if (m_mt != *pMediaType)
+             return VFW_E_TYPE_NOT_ACCEPTED;
+    }
 
     return S_OK;
 }
@@ -183,52 +200,86 @@ HRESULT CDahuaSourceStream::CheckMediaType(const CMediaType *pMediaType)
 HRESULT CDahuaSourceStream::GetMediaType(int iPosition, CMediaType *pmt)
 {
     if (iPosition < 0) return E_INVALIDARG;
-    if (iPosition > 8) return VFW_S_NO_MORE_ITEMS;
+    if (iPosition > 2) return VFW_S_NO_MORE_ITEMS;
 
-    if (iPosition == 0)
-    {
-        *pmt = m_mt;
-        return S_OK;
-    }
+    // Get current channel info
+    ChannelInfo channelInfo;
+    if (!ConnectDevice() || !m_Device.GetCurrentChannelInfo(channelInfo))
+        return E_FAIL;
 
     DECLARE_PTR(VIDEOINFOHEADER, pvi, pmt->AllocFormatBuffer(sizeof(VIDEOINFOHEADER)));
     ZeroMemory(pvi, sizeof(VIDEOINFOHEADER));
 
-    if (pvi != NULL)
-    {
-        pvi->bmiHeader.biCompression = BI_RGB;
-        pvi->bmiHeader.biBitCount = 24;
-        pvi->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        pvi->bmiHeader.biWidth = 480 * iPosition;
-        pvi->bmiHeader.biHeight = 384 * iPosition;
-        pvi->bmiHeader.biPlanes = 1;
-        pvi->bmiHeader.biSizeImage = GetBitmapSize(&pvi->bmiHeader);
-        pvi->bmiHeader.biClrImportant = 0;
-
-        pvi->AvgTimePerFrame = 1000000;
-
-        SetRectEmpty(&(pvi->rcSource)); // we want the whole image area rendered.
-        SetRectEmpty(&(pvi->rcTarget)); // no particular destination rectangle
-
-        pmt->SetType(&MEDIATYPE_Video);
-        pmt->SetFormatType(&FORMAT_VideoInfo);
-        pmt->SetTemporalCompression(FALSE);
-
-        // Work out the GUID for the subtype from the header info.
-        const GUID SubTypeGUID = GetBitmapSubtype(&pvi->bmiHeader);
-        pmt->SetSubtype(&SubTypeGUID);
-        pmt->SetSampleSize(pvi->bmiHeader.biSizeImage);
+    if (iPosition == 0) {
+        // pass it our "preferred" which is 24 bits, since 16 is "poor quality" (really, it is), and I...think/guess that 24 is faster overall.
+        //  iPosition = 2; // 24 bit
+        // actually, just use 32 since it's more compatible, for now...too much fear...
+        iPosition = 1; // 32 bit   I once saw a freaky line in skype, too, so until I investigate, err on the side of compatibility...plus what about vlc with like 135 input?
+            // 32 -> 24 (2): getdibits took 2.251ms
+            // 32 -> 32 (1): getdibits took 2.916ms
+            // except those particular numbers might be misleading in terms of total speed...hmm...though if FFmpeg can use assembly to convert it, it might be a real speedup
     }
+
+    switch(iPosition)
+    {
+        case 1:
+        {
+            // 32bit format
+
+            // Since we use RGB888 (the default for 32 bit), there is
+            // no reason to use BI_BITFIELDS to specify the RGB
+            // masks [sometimes even if you don't have enough bits you don't need to anyway?]
+            // Also, not everything supports BI_BITFIELDS ...
+            pvi->bmiHeader.biCompression = BI_RGB;
+            pvi->bmiHeader.biBitCount    = 32;
+            break;
+        }
+        case 2:
+        {   // Return our 24bit format, same as above comments
+            pvi->bmiHeader.biCompression = BI_RGB;
+            pvi->bmiHeader.biBitCount    = 24;
+            break;
+        }
+    }
+
+    pvi->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    pvi->bmiHeader.biWidth = channelInfo.nWidth;
+    pvi->bmiHeader.biHeight = channelInfo.nHeight;
+    pvi->bmiHeader.biPlanes = 1;
+    pvi->bmiHeader.biSizeImage = GetBitmapSize(&pvi->bmiHeader);
+    pvi->bmiHeader.biClrImportant = 0;
+
+    pvi->AvgTimePerFrame = 10000000 / channelInfo.framesPerSecond;
+
+    SetRectEmpty(&(pvi->rcSource)); // we want the whole image area rendered.
+    SetRectEmpty(&(pvi->rcTarget)); // no particular destination rectangle
+
+    pmt->SetType(&MEDIATYPE_Video);
+    pmt->SetFormatType(&FORMAT_VideoInfo);
+    pmt->SetTemporalCompression(FALSE);
+
+    // Work out the GUID for the subtype from the header info.
+    const GUID SubTypeGUID = GetBitmapSubtype(&pvi->bmiHeader);
+    pmt->SetSubtype(&SubTypeGUID);
+    pmt->SetSampleSize(pvi->bmiHeader.biSizeImage);
 
     return NOERROR;
 }
 
 HRESULT CDahuaSourceStream::SetMediaType(const CMediaType *pmt)
 {
-    return S_OK;
-
     DECLARE_PTR(VIDEOINFOHEADER, pvi, pmt->Format());
     HRESULT hr = CSourceStream::SetMediaType(pmt);
+
+    if (SUCCEEDED(hr))
+    {
+        VIDEOINFOHEADER *pvi = (VIDEOINFOHEADER *) m_mt.Format();
+        if (pvi == NULL)
+            return E_UNEXPECTED;
+
+        if (pvi->AvgTimePerFrame)
+            m_rtSampleTime = pvi->AvgTimePerFrame;
+    }
 
     return hr;
 }
@@ -239,8 +290,26 @@ HRESULT CDahuaSourceStream::SetMediaType(const CMediaType *pmt)
 
 HRESULT STDMETHODCALLTYPE CDahuaSourceStream::SetFormat(AM_MEDIA_TYPE *pmt)
 {
-    DECLARE_PTR(VIDEOINFOHEADER, pvi, m_mt.pbFormat);
-    m_mt = *pmt;
+    // NULL means reset to default type...
+    if (pmt != NULL)
+    {
+        if (pmt->formattype != FORMAT_VideoInfo)  // FORMAT_VideoInfo == {CLSID_KsDataTypeHandlerVideo} 
+            return E_FAIL;
+
+        if (CheckMediaType((CMediaType *) pmt) != S_OK) {
+            return E_FAIL; // just in case :P [FME...]
+        }
+
+        DECLARE_PTR(VIDEOINFOHEADER, pvi, pmt->pbFormat);
+        if (pvi->bmiHeader.biWidth == 0 || pvi->bmiHeader.biHeight == 0)
+        {
+            return E_INVALIDARG;
+        }
+
+        // now save it away...for being able to re-offer it later. We could use Set MediaType but we're just being lazy and re-using m_mt for many things I guess
+        m_mt = *pmt;
+    }
+
     IPin* pin;
     ConnectedTo(&pin);
     if (pin)
@@ -249,6 +318,7 @@ HRESULT STDMETHODCALLTYPE CDahuaSourceStream::SetFormat(AM_MEDIA_TYPE *pmt)
         IFilterGraph *pGraph = filter->GetGraph();
         pGraph->Reconnect(this);
     }
+
     return S_OK;
 }
 
@@ -260,79 +330,58 @@ HRESULT STDMETHODCALLTYPE CDahuaSourceStream::GetFormat(AM_MEDIA_TYPE **ppmt)
 
 HRESULT STDMETHODCALLTYPE CDahuaSourceStream::GetNumberOfCapabilities(int *piCount, int *piSize)
 {
-    if (!ConnectDevice())
-        return -1;
-
-    // Get device caps
-
-
-    *piCount = 8;
+    *piCount = 3;
     *piSize = sizeof(VIDEO_STREAM_CONFIG_CAPS);
     return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE CDahuaSourceStream::GetStreamCaps(int iIndex, AM_MEDIA_TYPE **pmt, BYTE *pSCC)
 {
-    if (!ConnectDevice())
-        return -1;
+    HRESULT hr = GetMediaType(iIndex, &m_mt); // ensure setup/re-use m_mt ...
+    // some are indeed shared, apparently.
+    if (FAILED(hr))
+    {
+        return hr;
+    }
 
     *pmt = CreateMediaType(&m_mt);
-    DECLARE_PTR(VIDEOINFOHEADER, pvi, (*pmt)->pbFormat);
+    if (*pmt == NULL) return E_OUTOFMEMORY;
 
-    if (pvi == NULL)
-        return -1;
+    // Get current channel info
+    ChannelInfo channelInfo;
 
-    if (iIndex == 0) iIndex = 4;
-
-    pvi->bmiHeader.biCompression = BI_RGB;
-    pvi->bmiHeader.biBitCount = 24;
-    pvi->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    pvi->bmiHeader.biWidth = 80 * iIndex;
-    pvi->bmiHeader.biHeight = 60 * iIndex;
-    pvi->bmiHeader.biPlanes = 1;
-    pvi->bmiHeader.biSizeImage = GetBitmapSize(&pvi->bmiHeader);
-    pvi->bmiHeader.biClrImportant = 0;
-
-    SetRectEmpty(&(pvi->rcSource)); // we want the whole image area rendered.
-    SetRectEmpty(&(pvi->rcTarget)); // no particular destination rectangle
-
-    (*pmt)->majortype = MEDIATYPE_Video;
-    (*pmt)->subtype = MEDIASUBTYPE_RGB24;
-    (*pmt)->formattype = FORMAT_VideoInfo;
-    (*pmt)->bTemporalCompression = FALSE;
-    (*pmt)->bFixedSizeSamples = FALSE;
-    (*pmt)->lSampleSize = pvi->bmiHeader.biSizeImage;
-    (*pmt)->cbFormat = sizeof(VIDEOINFOHEADER);
+    if (!ConnectDevice() || !m_Device.GetCurrentChannelInfo(channelInfo))
+        return E_FAIL;
 
     DECLARE_PTR(VIDEO_STREAM_CONFIG_CAPS, pvscc, pSCC);
 
     pvscc->guid = FORMAT_VideoInfo;
     pvscc->VideoStandard = AnalogVideo_None;
-    pvscc->InputSize.cx = 640;
-    pvscc->InputSize.cy = 480;
-    pvscc->MinCroppingSize.cx = 80;
-    pvscc->MinCroppingSize.cy = 60;
-    pvscc->MaxCroppingSize.cx = 640;
-    pvscc->MaxCroppingSize.cy = 480;
-    pvscc->CropGranularityX = 80;
-    pvscc->CropGranularityY = 60;
-    pvscc->CropAlignX = 0;
-    pvscc->CropAlignY = 0;
+    pvscc->InputSize.cx = channelInfo.nWidth;
+    pvscc->InputSize.cy = channelInfo.nHeight;
+    pvscc->MinCroppingSize.cx = channelInfo.nWidth;
+    pvscc->MinCroppingSize.cy = channelInfo.nHeight;
+    pvscc->MaxCroppingSize.cx = channelInfo.nWidth;
+    pvscc->MaxCroppingSize.cy = channelInfo.nHeight;
+    pvscc->CropGranularityX = 1;
+    pvscc->CropGranularityY = 1;
+    pvscc->CropAlignX = 1;
+    pvscc->CropAlignY = 1;
 
-    pvscc->MinOutputSize.cx = 80;
-    pvscc->MinOutputSize.cy = 60;
-    pvscc->MaxOutputSize.cx = 640;
-    pvscc->MaxOutputSize.cy = 480;
-    pvscc->OutputGranularityX = 0;
-    pvscc->OutputGranularityY = 0;
-    pvscc->StretchTapsX = 0;
-    pvscc->StretchTapsY = 0;
-    pvscc->ShrinkTapsX = 0;
-    pvscc->ShrinkTapsY = 0;
+    pvscc->MinOutputSize.cx = 1;
+    pvscc->MinOutputSize.cy = 1;
+    pvscc->MaxOutputSize.cx = channelInfo.nWidth;
+    pvscc->MaxOutputSize.cy = channelInfo.nHeight;
+    pvscc->OutputGranularityX = 1;
+    pvscc->OutputGranularityY = 1;
+    pvscc->StretchTapsX = 1;
+    pvscc->StretchTapsY = 1;
+    pvscc->ShrinkTapsX = 1;
+    pvscc->ShrinkTapsY = 1;
     pvscc->MinFrameInterval = 200000;   //50 fps
     pvscc->MaxFrameInterval = 50000000; // 0.2 fps
-    pvscc->MinBitsPerSecond = (80 * 60 * 3 * 8) / 5;
-    pvscc->MaxBitsPerSecond = 640 * 480 * 3 * 8 * 50;
+    pvscc->MinBitsPerSecond = 1 * 1 * 3 * 8 * channelInfo.framesPerSecond;
+    pvscc->MaxBitsPerSecond = channelInfo.nWidth * channelInfo.nHeight * 3 * 8 * channelInfo.framesPerSecond;
 
     return S_OK;
 }
