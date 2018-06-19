@@ -5,6 +5,8 @@
 #include <sstream>
 #include <vector>
 
+BOOL    GetAnalogResolution(BYTE byImageSize, WORD& width, WORD& height);
+
 #define APP_REGISTRY_LOC TEXT("SOFTWARE\\SQTech\\DahuaFilter\\VideoSource")
 #define KEY_NAME_CONNECTION_PARAM TEXT("CONNECTION_PARAM")
 #define KEY_NAME_READ_COMPLETE TEXT("READ_COMPLETE")
@@ -39,7 +41,7 @@ CDahuaDevice::~CDahuaDevice()
     }
 }
 
-BOOL CDahuaDevice::InitializeDevices(ICaptureEvent* captureEvents, long bufferSize, DeviceConnectionParam* connectionParam)
+BOOL CDahuaDevice::InitializeDevices(long bufferSize, DeviceConnectionParam* connectionParam)
 {
     int err;
 
@@ -279,6 +281,21 @@ BOOL CDahuaDevice::GetDeviceConfig()
     return FALSE;
 }
 
+BOOL CDahuaDevice::GetCurrentChannelInfo(ChannelInfo& channelInfo)
+{
+    // Check device is connected and valid channel number is given
+    if (!GetDeviceConfig())
+        return FALSE;
+
+    // Get stored channel info
+    DH_VIDEOENC_OPT options = m_ChannelsInfo[m_siNode.iHandle].stMainVideoEncOpt[0];
+    channelInfo.framesPerSecond = options.byFramesPerSec;
+    if (GetAnalogResolution(options.byImageSize, channelInfo.nWidth, channelInfo.nHeight))
+        return TRUE;
+
+    return FALSE;
+}
+
 HWND CDahuaDevice::GetChannelWindow()
 {
     if (m_hWnd == NULL)
@@ -450,4 +467,37 @@ BOOL CDahuaDevice::SetValueToRegistry(HKEY hkey, LPCTSTR strValName, DWORD type,
     }
 
     return lRet;
+}
+
+// This function returns analog video resolution according to byImageSize flag
+BOOL GetAnalogResolution(BYTE byImageSize, WORD& width, WORD& height)
+{
+    // Please refer following url to get resolutions according to analog video format
+    // https://www.hkvstar.com/technology-news/analog-video-resolution-qcif-cif-4cif-hd1-d1-960h.html
+    struct {
+        WORD Width, Height;
+    } AnalogVideoResolution[] = {
+        { 704, 576 },   // D1       0x01
+        { 352, 576 },   // HD1      0x02
+        { 704, 288 },   // BCIF     0x04
+        { 352, 288 },   // CIF      0x08
+        { 176, 144 },   // QCIF     0x10
+        { 640, 480 },   // VGA      0x20
+        { 320, 240 },   // QVGA     0x40
+        { 480, 576 },   // SVCD     0x80
+        // We don't enumerate all the available resolutions now
+    };
+
+    for (int i = 0; i < sizeof(AnalogVideoResolution) / sizeof(AnalogVideoResolution[0]); i++)
+    {
+        if ((byImageSize & (1 << i)) != 0)
+        {
+            width = AnalogVideoResolution[i].Width;
+            height = AnalogVideoResolution[i].Height;
+
+            return TRUE;
+        }
+    }
+
+    return FALSE;
 }

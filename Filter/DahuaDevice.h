@@ -79,6 +79,12 @@ typedef struct _SplitInfoNode
     void *Param;  // Information parameters, with different parameters for different display
 } SplitInfoNode;
 
+typedef struct _ChannelInfo
+{
+    WORD    nWidth, nHeight;
+    BYTE    framesPerSecond;
+} ChannelInfo;
+
 class CDahuaDevice
 {
 public:
@@ -86,7 +92,7 @@ public:
     ~CDahuaDevice();
 
 public:
-    BOOL InitializeDevices(ICaptureEvent* captureEvents, long bufferSize, DeviceConnectionParam*);
+    BOOL InitializeDevices(long bufferSize, DeviceConnectionParam*);
     BOOL IsInitialized();
 
     LONG StartPlay(int nChannelNo, DH_RealPlayType subtype);
@@ -94,6 +100,7 @@ public:
     BOOL StopPlay(void);
 
     BOOL GetDeviceConfig();
+    BOOL GetCurrentChannelInfo(ChannelInfo& channelInfo);
 
     BOOL ReadVideoSourceConnectionParam(DeviceConnectionParam* connectionParam);
     BOOL SetReadCompleteFlag();
