@@ -2,6 +2,7 @@
 
 #include "dhnetsdk.h"
 #include "CaptureEvents.h"
+#include <vector>
 
 // Alarm interface
 typedef struct
@@ -116,6 +117,7 @@ protected:
 
     HWND        m_hWnd;
     SplitInfoNode m_siNode;
+    std::vector<DHDEV_CHANNEL_CFG>  m_ChannelsInfo;
 
     BOOL m_bNetSDKInitFlag;
 };

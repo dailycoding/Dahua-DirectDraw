@@ -114,6 +114,8 @@ BOOL CDahuaDevice::InitializeSDK()
 
 void CALLBACK CDahuaDevice::OnDisconnect(LLONG lLoginID, char *pchDVRIP, LONG nDVRPort, LDWORD dwUser)
 {
+    // Clear channels info
+
     return;
 }
 
@@ -205,6 +207,11 @@ BOOL CDahuaDevice::StopPlay()
 
 BOOL CDahuaDevice::GetDeviceConfig()
 {
+    if (!m_DeviceNode.LoginID)
+        return FALSE;
+    else if (m_ChannelsInfo.size() > 0)
+        return TRUE;
+
     //judge it is third generation ptotocol device or not
     BOOL b3GProtocol = FALSE;
     int len = 0;
@@ -214,102 +221,62 @@ BOOL CDahuaDevice::GetDeviceConfig()
     if (bRet && len == sizeof(DH_DEV_ENABLE_INFO))
     {
         if (stDevEn.IsFucEnable[EN_JSON_CONFIG] != 0 || m_DeviceNode.Info.byChanNum > 32)
-        {
             b3GProtocol = TRUE;
-        }
         else
-        {
             b3GProtocol = FALSE;
-        }
     }
 
-    if (b3GProtocol == TRUE)
+    //if (b3GProtocol == TRUE)
+    //{
+    //    char *szOutBuffer = new char[32 * 1024];
+    //    memset(szOutBuffer, 0, 32 * 1024);
+
+    //    int nerror = 0;
+    //    CFG_ENCODE_INFO stuEncodeInfo = { 0 };
+    //    int nrestart = 0;
+
+    //    BOOL bSuccess = CLIENT_GetNewDevConfig(m_DeviceNode.LoginID, CFG_CMD_ENCODE, 0, szOutBuffer, 32 * 1024, &nerror, 5000);
+    //    if (bSuccess)
+    //    {
+    //        int nRetLen = 0;
+    //        //analysis
+    //        BOOL bRet = CLIENT_ParseData(CFG_CMD_ENCODE, (char *)szOutBuffer, &stuEncodeInfo, sizeof(CFG_ENCODE_INFO), &nRetLen);
+    //        if (bRet == FALSE)
+    //        {
+    //            printf("CLIENT_ParseData: CFG_CMD_ENCODE failed!\n");
+    //        }
+    //    }
+    //    else
+    //    {
+    //        printf("CLIENT_GetNewDevConfig: CFG_CMD_ENCODE failed!\n");
+
+    //    }
+
+    //    //stuEncodeInfo.stuMainStream[0].stuVideoFormat.nFrameRate = 20;//change frame rate
+    //    //memset(szOutBuffer, 0, 32 * 1024);
+
+    //    delete[] szOutBuffer;
+    //}
+    //else
+    if (b3GProtocol != TRUE)
     {
-        char *szOutBuffer = new char[32 * 1024];
-        memset(szOutBuffer, 0, 32 * 1024);
+        DWORD dwRetLen = 0, dwBufSize = 0;
 
-        int nerror = 0;
-        CFG_ENCODE_INFO stuEncodeInfo = { 0 };
-        int nrestart = 0;
-
-        BOOL bSuccess = CLIENT_GetNewDevConfig(m_DeviceNode.LoginID, CFG_CMD_ENCODE, 0, szOutBuffer, 32 * 1024, &nerror, 5000);
-        if (bSuccess)
-        {
-            int nRetLen = 0;
-            //analysis
-            BOOL bRet = CLIENT_ParseData(CFG_CMD_ENCODE, (char *)szOutBuffer, &stuEncodeInfo, sizeof(CFG_ENCODE_INFO), &nRetLen);
-            if (bRet == FALSE)
-            {
-                printf("CLIENT_ParseData: CFG_CMD_ENCODE failed!\n");
-            }
-        }
-        else
-        {
-            printf("CLIENT_GetNewDevConfig: CFG_CMD_ENCODE failed!\n");
-
-        }
-
-        //stuEncodeInfo.stuMainStream[0].stuVideoFormat.nFrameRate = 20;//change frame rate
-        //memset(szOutBuffer, 0, 32 * 1024);
-
-        //bSuccess = CLIENT_PacketData(CFG_CMD_ENCODE, (char *)&stuEncodeInfo, sizeof(CFG_ENCODE_INFO), szOutBuffer, 32 * 1024);
-        //if (bSuccess == FALSE)
-        //{
-        //    printf("CLIENT_PacketData: CFG_CMD_ENCODE failed!\n");
-        //}
-        //else
-        //{
-        //    bSuccess = CLIENT_SetNewDevConfig(m_DeviceNode.LoginID, CFG_CMD_ENCODE, 0, szOutBuffer, 32 * 1024, &nerror, &nrestart, 3000);
-        //    if (bSuccess)
-        //    {
-        //        if (nrestart == 1)
-        //        {
-        //            printf("Save config info successfully!devide need restart!\n");
-        //        }
-        //    }
-        //    else
-        //    {
-        //        printf("CLIENT_SetNewDevConfig CFG_CMD_ENCODE failed!\n");
-        //    }
-        //}
-
-        delete[] szOutBuffer;
-    }
-    else
-    {
+        // Prepare buffer for channels info and initialize it
         int nChannelCount = m_DeviceNode.Info.byChanNum;
-        DWORD dwRetLen = 0;
-        DHDEV_CHANNEL_CFG *pChannelInfo = new DHDEV_CHANNEL_CFG[nChannelCount];
-        memset(pChannelInfo, 0, nChannelCount * sizeof(DHDEV_CHANNEL_CFG));
+        m_ChannelsInfo.resize(nChannelCount);
 
-        BOOL bSuccess = CLIENT_GetDevConfig(m_DeviceNode.LoginID, DH_DEV_CHANNELCFG, -1, pChannelInfo, nChannelCount * sizeof(DHDEV_CHANNEL_CFG), &dwRetLen);
-        if (!(bSuccess && dwRetLen == nChannelCount * sizeof(DHDEV_CHANNEL_CFG)))
+        dwBufSize = nChannelCount * sizeof(m_ChannelsInfo[0]);
+        memset(m_ChannelsInfo.data(), 0, dwBufSize);
+
+        BOOL bSuccess = CLIENT_GetDevConfig(m_DeviceNode.LoginID, DH_DEV_CHANNELCFG, -1, m_ChannelsInfo.data(), dwBufSize, &dwRetLen);
+        if (bSuccess && dwRetLen == dwBufSize)
         {
-            printf("CLIENT_GetDevConfig: DH_DEV_CHANNELCFG failed!\n");
+            return TRUE;
         }
-
-        //pChannelInfo[0].stMainVideoEncOpt[0].byFramesPerSec = 20;//change frame rate
-
-        //bSuccess = CLIENT_SetDevConfig(m_DeviceNode.LoginID, DH_DEV_CHANNELCFG, -1, pChannelInfo, nChannelCount * sizeof(DHDEV_CHANNEL_CFG));
-        //if (bSuccess == FALSE)
-        //{
-        //    printf("CLIENT_SetDevConfig: DH_DEV_CHANNELCFG failed!\n");
-        //}
-
-        delete[] pChannelInfo;
     }
 
-    // Get Video Resolution
-    DWORD dwRetLen = 0;
-    DEV_VIDEOOUT_INFO videoOutInfo;
-    BOOL bSuccess = CLIENT_GetDevConfig(m_DeviceNode.LoginID, DH_DEV_VIDEOOUT_CFG, -1, &videoOutInfo, sizeof(videoOutInfo), &dwRetLen);
-    if (bSuccess)
-    {
-
-    }
-
-
-    return TRUE;
+    return FALSE;
 }
 
 HWND CDahuaDevice::GetChannelWindow()
