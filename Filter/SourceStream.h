@@ -1,7 +1,6 @@
 #pragma once
 
 #include <source.h>
-#include "CaptureEvents.h"
 #include "DahuaDevice.h"
 
 class CDahuaSourceStream : public CSourceStream, public IAMStreamConfig, public IKsPropertySet

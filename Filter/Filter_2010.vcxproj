@@ -106,7 +106,6 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="CaptureEvents.h" />
     <ClInclude Include="DahuaDevice.h" />
     <ClInclude Include="Filters.h" />
     <ClInclude Include="SourceStream.h" />

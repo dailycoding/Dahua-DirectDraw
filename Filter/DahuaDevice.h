@@ -1,7 +1,6 @@
 ﻿#pragma once
 
 #include "dhnetsdk.h"
-#include "CaptureEvents.h"
 #include <vector>
 
 // Alarm interface

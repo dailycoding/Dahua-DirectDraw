@@ -41,9 +41,6 @@
     <ClInclude Include="SourceStream.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="CaptureEvents.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="DahuaDevice.h">
       <Filter>Header Files</Filter>
     </ClInclude>
