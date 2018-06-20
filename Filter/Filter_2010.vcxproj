@@ -58,11 +58,17 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <AdditionalLibraryDirectories>$(OutDir);..\DahuaSDK\Win32</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(OutDir);..\DahuaSDK\Win32\Lib</AdditionalLibraryDirectories>
       <AdditionalDependencies>strmbasd.lib;winmm.lib;dhnetsdk.lib;dhconfigsdk.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ModuleDefinitionFile>DahuaFilter.def</ModuleDefinitionFile>
     </Link>
+    <PostBuildEvent>
+      <Command>echo n | copy "$(SolutionDir)dahuasdk\Win32\Dll\*.dll" "$(OutDir)" /-Y</Command>
+    </PostBuildEvent>
+    <PostBuildEvent>
+      <Message>Copying Dahua SDK and decorder dll files...</Message>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -80,10 +86,14 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalLibraryDirectories>$(OutDir);..\DahuaSDK\Win32</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(OutDir);..\DahuaSDK\Win32\Lib</AdditionalLibraryDirectories>
       <AdditionalDependencies>strmbase.lib;winmm.lib;dhnetsdk.lib;dhconfigsdk.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ModuleDefinitionFile>DahuaFilter.def</ModuleDefinitionFile>
     </Link>
+    <PostBuildEvent>
+      <Message>Copying Dahua SDK and decorder dll files...</Message>
+      <Command>echo n | copy "$(SolutionDir)dahuasdk\Win32\Dll\*.dll" "$(OutDir)" /-Y</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="DahuaDevice.cpp" />
