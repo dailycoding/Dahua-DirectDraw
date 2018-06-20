@@ -3,9 +3,8 @@
 #include "dhconfigsdk.h"
 #include <cstdlib>
 #include <sstream>
-#include <vector>
 
-BOOL    GetAnalogResolution(BYTE byImageSize, WORD& width, WORD& height);
+bool YV12_to_RGB24(unsigned char* pYV12, unsigned char* pRGB24, int iWidth, int iHeight);
 
 #define APP_REGISTRY_LOC TEXT("SOFTWARE\\SQTech\\DahuaFilter\\VideoSource")
 #define KEY_NAME_CONNECTION_PARAM TEXT("CONNECTION_PARAM")
@@ -23,10 +22,13 @@ CDahuaDevice::CDahuaDevice()
     m_NetParam.nSubConnectSpaceTime = 1000;
     m_NetParam.nGetConnInfoTime = 5000;
 
-    m_hWnd = NULL;
-    memset(&m_siNode, 0, sizeof(m_siNode));
+    memset(&m_DeviceNode, 0, sizeof(m_DeviceNode));
+    memset(&m_ChannelNode, 0, sizeof(m_ChannelNode));
 
     m_bNetSDKInitFlag = FALSE;
+    m_hWnd = NULL;
+
+    InitializeCriticalSection(&m_csVideoFrame);
 }
 
 CDahuaDevice::~CDahuaDevice()
@@ -39,6 +41,8 @@ CDahuaDevice::~CDahuaDevice()
         //release SDK resoure
         CLIENT_Cleanup();
     }
+
+    DeleteCriticalSection(&m_csVideoFrame);
 }
 
 BOOL CDahuaDevice::InitializeDevices(long bufferSize, DeviceConnectionParam* connectionParam)
@@ -67,19 +71,12 @@ BOOL CDahuaDevice::InitializeDevices(long bufferSize, DeviceConnectionParam* con
     if (m_DeviceNode.LoginID > 0)
     {
         m_DeviceNode.bIsOnline = TRUE;
+        m_DeviceNode.nChnNum = m_DeviceNode.Info.byChanNum;
 
-        // Query device state and get channel count
-        int nRetLen = 0;
-        NET_DEV_CHN_COUNT_INFO stuChn = { sizeof(NET_DEV_CHN_COUNT_INFO) };
-        stuChn.stuVideoIn.dwSize = sizeof(stuChn.stuVideoIn);
-        stuChn.stuVideoOut.dwSize = sizeof(stuChn.stuVideoOut);
-        if (CLIENT_QueryDevState(m_DeviceNode.LoginID, DH_DEVSTATE_DEV_CHN_COUNT, (char*)&stuChn, stuChn.dwSize, &nRetLen))
+        if (!GetChannelsInfo())
         {
-            m_DeviceNode.nChnNum = stuChn.stuVideoIn.nMaxTotal;
-        }
-        else
-        {
-            m_DeviceNode.nChnNum = m_DeviceNode.Info.byChanNum;
+            LastError();
+            return FALSE;
         }
 
         // Start listening for device callback information
@@ -126,7 +123,7 @@ LONG CDahuaDevice::StartPlay(int nCh, DH_RealPlayType subtype)
     LONG nID = m_DeviceNode.LoginID;
     LONG nChannelID;
 
-    HWND hWnd = GetChannelWindow();
+    HWND hWnd = GetVideoWindow();
 
     nChannelID = CLIENT_RealPlayEx(nID, nCh, hWnd, subtype);
 
@@ -158,56 +155,96 @@ LONG CDahuaDevice::StartPlay(int nCh, DH_RealPlayType subtype)
     }
 
     // Save channel info
-    SplitInfoNode& siNode = m_siNode;
-    siNode.Type = SPLIT_TYPE_MONITOR;
-    siNode.nVideoParam.dwParam = *(DWORD *)bVideo;
-    siNode.iHandle = nChannelID;
+    DH_VIDEOENC_OPT options = m_ChannelsInfo[nCh].stMainVideoEncOpt[0];
 
-    SplitMonitorParam *mparam = new SplitMonitorParam;
-    mparam->pDevice = &m_DeviceNode;
-    mparam->iChannel = nCh;
-
-    siNode.Param = mparam;
-
-    // Open sound
-    nRet = CLIENT_OpenSound(nChannelID);
-    if (!nRet)
+    m_ChannelNode.iHandle = nChannelID;
+    m_ChannelNode.bVideoFormat = 0;
+    m_ChannelNode.nFramesPerSecond = options.byFramesPerSec;
+    if (!GetFrameSize(options.byImageSize, m_ChannelNode.nWidth, m_ChannelNode.nHeight))
     {
-        // ...
+        LastError();
+        return E_FAIL;
     }
 
-    // Set Data callback
-    BOOL cbRec = CLIENT_SetRealDataCallBackEx(nChannelID, RealDataCallBackEx, 0, 0x0000000f);
+    // Prepare frame buffer
+    EnterCriticalSection(&m_csVideoFrame);
+    {
+        // m_aVideoFrameData will contain RGB888 frame data
+        m_aVideoFrameData.resize(3 * m_ChannelNode.nWidth * m_ChannelNode.nHeight);
+        memset(m_aVideoFrameData.data(), 0, m_aVideoFrameData.size());
+    }
+    LeaveCriticalSection(&m_csVideoFrame);
+
+
+    // Don't open sound right now...
+
+    // Set Data callback to retrieve YUV data
+    BOOL cbRec = CLIENT_SetRealDataCallBackEx(nChannelID, RealDataCallBackEx, (LDWORD)this, 4);
     if (!cbRec)
     {
         LastError();
-
-        return -1;
+        return E_FAIL;
     }
 
-    return 0;
+    return S_OK;
 }
 
 BOOL CDahuaDevice::StopPlay()
 {
-    SplitInfoNode& siNode = m_siNode;
-    if (siNode.iHandle)
+    if (m_ChannelNode.iHandle)
     {
-        CLIENT_StopRealPlayEx(siNode.iHandle);
-        siNode.iHandle = 0;
-    }
-    if (siNode.Param != NULL)
-    {
-        delete (SplitMonitorParam *)siNode.Param;
-        siNode.Param = NULL;
+        CLIENT_StopRealPlayEx(m_ChannelNode.iHandle);
+        m_ChannelNode.iHandle = 0;
     }
     
-    memset(&siNode, 0, sizeof(siNode));
+    // Clear channel info
+    memset(&m_ChannelNode, 0, sizeof(m_ChannelNode));
+    
+    EnterCriticalSection(&m_csVideoFrame);
+    {
+        m_aVideoFrameData.resize(0);
+    }
+    LeaveCriticalSection(&m_csVideoFrame);
 
     return TRUE;
 }
 
-BOOL CDahuaDevice::GetDeviceConfig()
+BOOL CDahuaDevice::GetCurrentChannelInfo(ChannelNode& channelInfo)
+{
+    if (m_ChannelNode.iHandle > 0)
+    {
+        memcpy(&channelInfo, &m_ChannelNode, sizeof(m_ChannelNode));
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+BOOL CDahuaDevice::GetCurrentChannelFrame(BYTE *pBuffer, DWORD dwBufSize)
+{
+    // Check buffer is ready
+    if (pBuffer == NULL || dwBufSize < 0)
+        return FALSE;
+
+    // If channel is playing, copy video frame
+    BOOL bSuccess = FALSE;
+    if (m_ChannelNode.iHandle > 0)
+    {
+        EnterCriticalSection(&m_csVideoFrame);
+        {
+            if (dwBufSize >= m_aVideoFrameData.size())
+            {
+                memcpy_s(pBuffer, dwBufSize, m_aVideoFrameData.data(), m_aVideoFrameData.size());
+                bSuccess = TRUE;
+            }
+        }
+        LeaveCriticalSection(&m_csVideoFrame);
+    }
+
+    return bSuccess;
+}
+
+BOOL CDahuaDevice::GetChannelsInfo()
 {
     if (!m_DeviceNode.LoginID)
         return FALSE;
@@ -271,32 +308,19 @@ BOOL CDahuaDevice::GetDeviceConfig()
         dwBufSize = nChannelCount * sizeof(m_ChannelsInfo[0]);
         memset(m_ChannelsInfo.data(), 0, dwBufSize);
 
-        BOOL bSuccess = CLIENT_GetDevConfig(m_DeviceNode.LoginID, DH_DEV_CHANNELCFG, -1, m_ChannelsInfo.data(), dwBufSize, &dwRetLen);
+        BOOL bSuccess = CLIENT_GetDevConfig(m_DeviceNode.LoginID, DH_DEV_CHANNELCFG, -1, m_ChannelsInfo.data(), dwBufSize, &dwRetLen, 5000);
         if (bSuccess && dwRetLen == dwBufSize)
         {
             return TRUE;
         }
+
+        m_ChannelsInfo.resize(0);
     }
 
     return FALSE;
 }
 
-BOOL CDahuaDevice::GetCurrentChannelInfo(ChannelInfo& channelInfo)
-{
-    // Check device is connected and valid channel number is given
-    if (!GetDeviceConfig())
-        return FALSE;
-
-    // Get stored channel info
-    DH_VIDEOENC_OPT options = m_ChannelsInfo[m_siNode.iHandle].stMainVideoEncOpt[0];
-    channelInfo.framesPerSecond = options.byFramesPerSec;
-    if (GetAnalogResolution(options.byImageSize, channelInfo.nWidth, channelInfo.nHeight))
-        return TRUE;
-
-    return FALSE;
-}
-
-HWND CDahuaDevice::GetChannelWindow()
+HWND CDahuaDevice::GetVideoWindow()
 {
     if (m_hWnd == NULL)
     {
@@ -304,6 +328,28 @@ HWND CDahuaDevice::GetChannelWindow()
     }
 
     return m_hWnd;
+}
+
+void CDahuaDevice::UpdateVideoFrame(LPBYTE yuvData, DWORD length, long width, long height)
+{
+    // Check data is valid
+    if (yuvData == NULL || width <= 0 || height <= 0)
+        return;
+
+    // Check data length is for YUV12
+    if (width * height * 3 / 2 != length)
+        return;
+
+    // Convert YUV12 to RGB
+    EnterCriticalSection(&m_csVideoFrame);
+    {
+        memset(m_aVideoFrameData.data(), 0, m_aVideoFrameData.size());
+
+        // Calculate offset to place NTSC frame on the center of the screen
+        DWORD offset = (m_aVideoFrameData.size() - (3 * width * height)) / 2;
+        YV12_to_RGB24(yuvData, m_aVideoFrameData.data() + offset, width, height);
+    }
+    LeaveCriticalSection(&m_csVideoFrame);
 }
 
 void CDahuaDevice::LastError()
@@ -315,6 +361,11 @@ void CDahuaDevice::LastError()
 
 void CALLBACK CDahuaDevice::RealDataCallBackEx(LLONG lRealHandle, DWORD dwDataType, BYTE *pBuffer, DWORD dwBufSize, LONG lParam, LDWORD dwUser)
 {
+    CDahuaDevice *self = (CDahuaDevice *)dwUser;
+    tagCBYUVDataParam *param = (tagCBYUVDataParam *)lParam;
+
+    self->UpdateVideoFrame(pBuffer, dwBufSize, param->nWidth, param->nHeight);
+
     return;
 }
 
@@ -469,35 +520,206 @@ BOOL CDahuaDevice::SetValueToRegistry(HKEY hkey, LPCTSTR strValName, DWORD type,
     return lRet;
 }
 
-// This function returns analog video resolution according to byImageSize flag
-BOOL GetAnalogResolution(BYTE byImageSize, WORD& width, WORD& height)
+// This function returns video frame resolution
+// Sometimes, the resolution is different whether video format is PAL or NTSC
+// Fortunately, the width is same and height for NTSC is a bit smaller than PAL
+// So we use PAL frame size as default
+BOOL CDahuaDevice::GetFrameSize(BYTE captureSize, WORD& width, WORD& height)
 {
-    // Please refer following url to get resolutions according to analog video format
-    // https://www.hkvstar.com/technology-news/analog-video-resolution-qcif-cif-4cif-hd1-d1-960h.html
-    struct {
-        WORD Width, Height;
-    } AnalogVideoResolution[] = {
-        { 704, 576 },   // D1       0x01
-        { 352, 576 },   // HD1      0x02
-        { 704, 288 },   // BCIF     0x04
-        { 352, 288 },   // CIF      0x08
-        { 176, 144 },   // QCIF     0x10
-        { 640, 480 },   // VGA      0x20
-        { 320, 240 },   // QVGA     0x40
-        { 480, 576 },   // SVCD     0x80
-        // We don't enumerate all the available resolutions now
-    };
-
-    for (int i = 0; i < sizeof(AnalogVideoResolution) / sizeof(AnalogVideoResolution[0]); i++)
+    switch (captureSize)
     {
-        if ((byImageSize & (1 << i)) != 0)
-        {
-            width = AnalogVideoResolution[i].Width;
-            height = AnalogVideoResolution[i].Height;
+    case CAPTURE_SIZE_D1:                           // 704*576(PAL)  704*480(NTSC)
+        width = 704;    height = 576;
+        break;
+    case CAPTURE_SIZE_HD1:                          // 352*576(PAL)  352*480(NTSC)
+        width = 352;    height = 576;
+        break;
+    case CAPTURE_SIZE_BCIF:                         // 704*288(PAL)  704*240(NTSC)
+        width = 704;    height = 288;
+        break;
+    case CAPTURE_SIZE_CIF:                          // 352*288(PAL)  352*240(NTSC)
+        width = 352;    height = 288;
+        break;
+    case CAPTURE_SIZE_QCIF:                         // 176*144(PAL)  176*120(NTSC)
+        width = 176;    height = 144;
+        break;
+    case CAPTURE_SIZE_VGA:                          // 640*480
+        width = 640;    height = 480;
+        break;
+    case CAPTURE_SIZE_QVGA:                         // 320*240
+        width = 320;    height = 240;
+        break;
+    case CAPTURE_SIZE_SVCD:                         // 480*480
+        width = 480;    height = 480;
+        break;
+    case CAPTURE_SIZE_QQVGA:                        // 160*128
+        width = 160;    height = 128;
+        break;
+    case CAPTURE_SIZE_SVGA:                         // 800*592
+        width = 800;    height = 592;
+        break;
+    case CAPTURE_SIZE_XVGA:                         // 1024*768
+        width = 1024;   height = 768;
+        break;
+    case CAPTURE_SIZE_WXGA:                         // 1280*800
+        width = 1280;   height = 800;
+        break;
+    case CAPTURE_SIZE_SXGA:                         // 1280*1024  
+        width = 1280;   height = 1024;
+        break;
+    case CAPTURE_SIZE_WSXGA:                        // 1600*1024  
+        width = 1600;   height = 1024;
+        break;
+    case CAPTURE_SIZE_UXGA:                         // 1600*1200
+        width = 1600;   height = 1200;
+        break;
+    case CAPTURE_SIZE_WUXGA:                        // 1920*1200
+        width = 1920;   height = 1200;
+        break;
+    case CAPTURE_SIZE_LTF:                          // 240*192
+        width = 240;    height = 192;
+        break;
+    case CAPTURE_SIZE_720:                          // 1280*720
+        width = 1280;   height = 720;
+        break;
+    case CAPTURE_SIZE_1080:                         // 1920*1080
+        width = 1920;   height = 1080;
+        break;
+    case CAPTURE_SIZE_1_3M:                         // 1280*960
+        width = 1280;   height = 960;
+        break;
+    case CAPTURE_SIZE_2M:                           // 1872*1408
+        width = 1872;   height = 1408;
+        break;
+    case CAPTURE_SIZE_5M:                           // 3744*1408
+        width = 3744;   height = 1408;
+        break;
+    case CAPTURE_SIZE_3M:                           // 2048*1536
+        width = 2048;   height = 1536;
+        break;
+    case CAPTURE_SIZE_5_0M:                         // 2432*2050
+        width = 2432;   height = 2050;
+        break;
+    case CPTRUTE_SIZE_1_2M:                         // 1216*1024
+        width = 1216;   height = 1024;
+        break;
+    case CPTRUTE_SIZE_1408_1024:                    // 1408*1024
+        width = 1408;   height = 1024;
+        break;
+    case CPTRUTE_SIZE_8M:                           // 3296*2472
+        width = 3296;   height = 2472;
+        break;
+    case CPTRUTE_SIZE_2560_1920:                    // 2560*1920(5M)
+        width = 2560;   height = 1920;
+        break;
+    case CAPTURE_SIZE_960H:                         // 960*576(PAL) 960*480(NTSC)
+        width = 960;    height = 576;
+        break;
+    case CAPTURE_SIZE_960_720:                      // 960*720
+        width = 960;    height = 720;
+        break;
+    case CAPTURE_SIZE_NHD:                          // 640*360
+        width = 640;    height = 360;
+        break;
+    case CAPTURE_SIZE_QNHD:                         // 320*180
+        width = 320;    height = 180;
+        break;
+    case CAPTURE_SIZE_QQNHD:                        // 160*90
+        width = 160;    height = 90;
+        break;
+    case CAPTURE_SIZE_960_540:                      // 960*540
+        width = 960;    height = 540;
+        break;
+    case CAPTURE_SIZE_640_352:                      // 640*352
+        width = 640;    height = 352;
+        break;
+    case CAPTURE_SIZE_640_400:                      // 640*400
+        width = 640;    height = 400;
+        break;
+    case CAPTURE_SIZE_320_192:                      // 320*192    
+        width = 320;    height = 192;
+        break;
+    case CAPTURE_SIZE_320_176:                      // 320*176
+        width = 320;    height = 176;
+        break;
+    //case CAPTURE_SIZE_NR:
+    default:
+        return FALSE;
+    }
+    
+    return TRUE;
+}
 
-            return TRUE;
+
+// Convert YUV12 to RGB24 byte array
+bool YV12_to_RGB24(unsigned char* pYV12, unsigned char* pRGB24, int iWidth, int iHeight)
+{
+    if (!pYV12 || !pRGB24)
+        return false;
+
+     const long nYLen = long(iHeight * iWidth);
+     const int nHfWidth = (iWidth>>1);
+
+     if (nYLen < 1 || nHfWidth < 1) 
+        return false;
+
+    // The yv12 data format, which Y component length is width * height, U and V components for the length of width * height / 4
+    // |WIDTH |
+    // y......y--------
+    // y......y   HEIGHT
+    // y......y
+    // y......y--------
+    // v..v
+    // v..v
+    // u..u
+    // u..u
+
+    unsigned char* yData = pYV12;
+    unsigned char* vData = &yData[nYLen];
+    unsigned char* uData = &vData[nYLen>>2];
+    if (!uData || !vData)
+        return false;
+
+    // Convert YV12 to RGB24
+    // 
+    // formula
+    //                           [1         1           1       ]
+    // [r g b] = [y u-128 v-128] [0         0.34375     0       ]
+    //                           [1.375     0.703125    1.734375]
+    // another formula
+    //                           [1         1           1       ]
+    // [r g b] = [y u-128 v-128] [0         0.698001    0       ]
+    //                           [1.370705  0.703125    1.732446]
+    int rgb[3];
+    int i, j, m, n, x, y;
+    m = -iWidth;
+    n = -nHfWidth;
+
+    for (y = 0; y < iHeight; y++)
+    {
+        m += iWidth;
+        if (!(y % 2))
+            n += nHfWidth;
+
+        for (x = 0; x <iWidth; x++)
+        {
+            i = m + x;
+            j = n + (x>>1);
+            rgb[2] = int(yData[i] + 1.370705 * (vData[j] - 128)); // R component value
+            rgb[1] = int(yData[i] - 0.698001 * (uData[j] - 128)  - 0.703125 * (vData[j] - 128)); // G component value
+            rgb[0] = int(yData[i] + 1.732446 * (uData[j] - 128)); // B component value
+
+            j = nYLen - iWidth - m + x;
+            i = (j << 1) + j;
+            for (j = 0; j < 3; j++)
+            {
+                if (rgb[j] >= 0 && rgb[j] <= 255)
+                    pRGB24[i + j] = rgb[j];
+                else
+                    pRGB24[i + j] = (rgb[j] <0) ? 0 : 255;
+            }
         }
     }
 
-    return FALSE;
+    return true;
 }

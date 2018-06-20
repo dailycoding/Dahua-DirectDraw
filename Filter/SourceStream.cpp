@@ -34,13 +34,9 @@ BOOL CDahuaSourceStream::ConnectDevice()
         m_Device.SetReadCompleteFlag();
         if (m_Device.InitializeDevices(0, &connectionParam))
         {
-            if (!m_Device.GetDeviceConfig())
-            {
-                DWORD dwErr = CLIENT_GetLastError();
-                return FALSE;
-            }
-
-            m_Device.StartPlay(connectionParam.ChannelNo, DH_RType_Realplay);
+            // Decrease channel number inputted by user so that it can be 0 based.
+            // DH_RType_Realplay_0 is a main stream
+            m_Device.StartPlay(connectionParam.ChannelNo - 1, DH_RType_Realplay_0);
 
             return TRUE;
         }
@@ -101,6 +97,7 @@ HRESULT CDahuaSourceStream::FillBuffer(IMediaSample *pms)
     if (m_bFirstTime)
     {
         m_bFirstTime = FALSE;
+
         if (!ConnectDevice())
         {
             // Failed to initialize, use random data to initialize screen
@@ -111,16 +108,9 @@ HRESULT CDahuaSourceStream::FillBuffer(IMediaSample *pms)
         }
     }
 
-    // If there's no screen captured, return
-    if (NULL == m_pBuf)
-    {
-        m_bProcessingBitmap = FALSE;
-        return NOERROR;
-    }
-
-    // Copy current screen buffer to pData
+    // Copy last saved video frame
     m_bProcessingBitmap = TRUE;
-    memcpy(pData, m_pBuf, lDataLen);
+    m_Device.GetCurrentChannelFrame(pData, lDataLen);
     m_bProcessingBitmap = FALSE;
 
     return NOERROR;
@@ -203,7 +193,7 @@ HRESULT CDahuaSourceStream::GetMediaType(int iPosition, CMediaType *pmt)
     if (iPosition > 2) return VFW_S_NO_MORE_ITEMS;
 
     // Get current channel info
-    ChannelInfo channelInfo;
+    ChannelNode channelInfo;
     if (!ConnectDevice() || !m_Device.GetCurrentChannelInfo(channelInfo))
         return E_FAIL;
 
@@ -214,10 +204,7 @@ HRESULT CDahuaSourceStream::GetMediaType(int iPosition, CMediaType *pmt)
         // pass it our "preferred" which is 24 bits, since 16 is "poor quality" (really, it is), and I...think/guess that 24 is faster overall.
         //  iPosition = 2; // 24 bit
         // actually, just use 32 since it's more compatible, for now...too much fear...
-        iPosition = 1; // 32 bit   I once saw a freaky line in skype, too, so until I investigate, err on the side of compatibility...plus what about vlc with like 135 input?
-            // 32 -> 24 (2): getdibits took 2.251ms
-            // 32 -> 32 (1): getdibits took 2.916ms
-            // except those particular numbers might be misleading in terms of total speed...hmm...though if FFmpeg can use assembly to convert it, it might be a real speedup
+        iPosition = 2;
     }
 
     switch(iPosition)
@@ -249,7 +236,7 @@ HRESULT CDahuaSourceStream::GetMediaType(int iPosition, CMediaType *pmt)
     pvi->bmiHeader.biSizeImage = GetBitmapSize(&pvi->bmiHeader);
     pvi->bmiHeader.biClrImportant = 0;
 
-    pvi->AvgTimePerFrame = 10000000 / channelInfo.framesPerSecond;
+    pvi->AvgTimePerFrame = 10000000 / channelInfo.nFramesPerSecond;
 
     SetRectEmpty(&(pvi->rcSource)); // we want the whole image area rendered.
     SetRectEmpty(&(pvi->rcTarget)); // no particular destination rectangle
@@ -348,7 +335,7 @@ HRESULT STDMETHODCALLTYPE CDahuaSourceStream::GetStreamCaps(int iIndex, AM_MEDIA
     if (*pmt == NULL) return E_OUTOFMEMORY;
 
     // Get current channel info
-    ChannelInfo channelInfo;
+    ChannelNode channelInfo;
 
     if (!ConnectDevice() || !m_Device.GetCurrentChannelInfo(channelInfo))
         return E_FAIL;
@@ -380,8 +367,8 @@ HRESULT STDMETHODCALLTYPE CDahuaSourceStream::GetStreamCaps(int iIndex, AM_MEDIA
     pvscc->ShrinkTapsY = 1;
     pvscc->MinFrameInterval = 200000;   //50 fps
     pvscc->MaxFrameInterval = 50000000; // 0.2 fps
-    pvscc->MinBitsPerSecond = 1 * 1 * 3 * 8 * channelInfo.framesPerSecond;
-    pvscc->MaxBitsPerSecond = channelInfo.nWidth * channelInfo.nHeight * 3 * 8 * channelInfo.framesPerSecond;
+    pvscc->MinBitsPerSecond = 1 * 1 * 3 * 8 * channelInfo.nFramesPerSecond;
+    pvscc->MaxBitsPerSecond = channelInfo.nWidth * channelInfo.nHeight * 3 * 8 * channelInfo.nFramesPerSecond;
 
     return S_OK;
 }
